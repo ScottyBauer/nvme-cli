@@ -159,6 +159,28 @@ static int validate_output_format(char *format)
 	return -EINVAL;
 }
 
+int parse_for_json(int argc, char **argv)
+{
+	int fmt;
+	struct config {
+		char *output_format;
+	};
+
+	struct config cfg = {
+		.output_format = "normal",
+	};
+
+	const struct argconfig_commandline_options opts[] = {
+		{"output-format", 'o', "FMT",
+		 CFG_STRING, &cfg.output_format,
+		 required_argument, "Output Format: normal|json"},
+		{NULL}
+	};
+	argconfig_parse(argc, argv, NULL, opts, &cfg, sizeof(cfg));
+	fmt = validate_output_format(cfg.output_format);
+	return fmt == JSON;
+}
+
 static int get_smart_log(int argc, char **argv, struct command *cmd, struct plugin *plugin)
 {
 	struct nvme_smart_log smart_log;
@@ -719,15 +741,6 @@ static void get_registers(struct nvme_bar **bar)
 	*bar = membase;
 }
 
-#define MAX_LIST_ITEMS 256
-struct list_item {
-	char                node[1024];
-	struct nvme_id_ctrl ctrl;
-	int                 nsid;
-	struct nvme_id_ns   ns;
-	unsigned            block;
-};
-
 static void print_list_item(struct list_item list_item)
 {
 
@@ -835,7 +848,11 @@ static int list(int argc, char **argv, struct command *cmd, struct plugin *plugi
 		if (ret)
 			return ret;
 	}
-	print_list_items(list_items, n);
+
+	if (parse_for_json(argc, argv))
+		json_print_list_items(list_items, n);
+	else
+		print_list_items(list_items, n);
 
 	for (i = 0; i < n; i++)
 		free(devices[i]);

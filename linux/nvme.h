@@ -768,12 +768,18 @@ enum {
 	NVME_LOG_SMART		= 0x02,
 	NVME_LOG_FW_SLOT	= 0x03,
 	NVME_LOG_CMD_EFFECTS	= 0x05,
+	NVME_LOG_TELEMETRY_HOST = 0x07,
 	NVME_LOG_DISC		= 0x70,
 	NVME_LOG_RESERVATION	= 0x80,
 	NVME_LOG_SANITIZE	= 0x81,
 	NVME_FWACT_REPL		= (0 << 3),
 	NVME_FWACT_REPL_ACTV	= (1 << 3),
 	NVME_FWACT_ACTV		= (2 << 3),
+};
+
+enum {
+	NVME_NO_LOG_LSP       = 0x0,
+	NVME_TELEM_LSP_CREATE = 0x1,
 };
 
 /* Sanitize and Sanitize Monitor/Log */

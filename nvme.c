@@ -143,12 +143,16 @@ int parse_and_open(int argc, char **argv, const char *desc,
 	int ret;
 
 	ret = argconfig_parse(argc, argv, desc, clo, cfg, size);
-	if (ret)
+	if (ret) {
+		printf("%s: arg parse failed\n", __func__);
 		return ret;
+	}
 
 	ret = get_dev(argc, argv);
-	if (ret < 0)
+	if (ret < 0) {
+		printf("%s: get_dev failed\n", __func__);
 		argconfig_print_help(desc, clo);
+	}
 
 	return ret;
 }
@@ -223,6 +227,106 @@ static int get_smart_log(int argc, char **argv, struct command *cmd, struct plug
 	return err;
 }
 
+static int get_telemetry_log(int argc, char **argv, struct command *cmd, struct plugin *plugin)
+{
+	const char *desc = "Retrieve telemetry log and write to binary file";
+	const char *fname = "File name to save raw binary, includes header";
+	const char *hgen = "Have the host tell the controller to generate the report";
+	struct nvme_telemetry_log_page *hdr;
+	//struct nvme_telemetry_log_page *full;
+	void *full, *orig;
+	size_t full_size, offset;
+	int err = 0 , fd, output, num_blocks;
+
+	struct config {
+		char *file_name;
+		int host_gen;
+	};
+	struct config cfg = {
+		.file_name = NULL,
+		.host_gen = 1,
+	};
+
+	const struct argconfig_commandline_options command_line_options[] = {
+		{"output-file", 'o', "FILE", CFG_STRING, &cfg.file_name, required_argument, fname},
+		{"host-generate", 'h', "NUM", CFG_POSITIVE, &cfg.host_gen, required_argument, hgen},
+		{NULL}
+	};
+
+	printf("Size of nvme_telem log struct is %zu\n", sizeof(hdr));
+	fd = parse_and_open(argc, argv, desc, command_line_options, &cfg, sizeof(cfg));
+	if (fd < 0) {
+		fprintf(stderr, "parse and open failed\n");
+		return fd;
+	}
+
+	output = open(cfg.file_name, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	if (output < 0) {
+		fprintf(stderr, "Failed to open output file!\n");
+		return output;
+	}
+
+	hdr = malloc(4096);
+	memset(hdr, 0, 4096);
+
+
+	err = nvme_get_telemetry_log(fd, hdr, cfg.host_gen, 4096, 0);
+	if (err) {
+		fprintf(stderr, "NVMe Status:%s(%x)\n",
+			nvme_status_to_string(err), err);
+		fprintf(stderr, "Failed to aquire telemetry header %d!\n", err);
+		return err;
+	}
+
+	err = write(output, (void *) hdr, 4096);
+	if (err != 4096)
+		fprintf(stderr, "Failed to flush all data to file!");
+
+	num_blocks = max(hdr->dalb1, max(hdr->dalb2, hdr->dalb3));
+	printf("%s: controller reports max dal to be %u with %u %d %u\n",
+	       __func__, num_blocks, hdr->dalb1, hdr->dalb2, hdr->dalb3);
+
+	full_size = num_blocks * 512;
+	printf("%s: Allocated %zu for telemetry log\n", __func__, full_size);
+	full_size += (4096 - (full_size % 4096));
+	printf("%s: Allocated %zu for telemetry log\n", __func__, full_size);
+	full = orig = malloc(full_size);
+	if (!full) {
+		fprintf(stderr, "Failed to allocate %zu bytes for log\n",
+			full_size);
+		return ENOMEM;
+	}
+
+	full_size -= 4096;
+	offset = 4096;
+	while (full_size) {
+		err = nvme_get_telemetry_log(fd, full, 0, 4096, offset);
+		if (err) {
+			fprintf(stderr, "Failed to aquire full telemetry log!\n");
+			fprintf(stderr, "NVMe Status:%s(%x)\n",
+				nvme_status_to_string(err), err);
+			free(full);
+			free(hdr);
+			return err;
+		}
+
+		printf("Writing 4096 bytes to file %s with %zu left\n", cfg.file_name, full_size);
+
+		err = write(output, (void *) full, 4096);
+		if (err != 4096) {
+			fprintf(stderr, "Failed to flush all data to file!");
+			return err;
+		}
+		full_size -= 4096;
+		offset += 4096;
+	}
+	free(full);
+	free(hdr);
+	close(fd);
+	close(output);
+	return err;
+}
+
 static int get_effects_log(int argc, char **argv, struct command *cmd, struct plugin *plugin)
 {
 	const char *desc = "Retrieve command effects log page and print the table.";
@@ -244,7 +348,7 @@ static int get_effects_log(int argc, char **argv, struct command *cmd, struct pl
 	if (fd < 0)
 		return fd;
 
-	err = nvme_get_log(fd, NVME_NSID_ALL, 5, 4096, &effects);
+	err = nvme_get_log(fd, NVME_NSID_ALL, NVME_NO_LOG_LSP, 5, 4096, &effects);
 	if (!err)
 		show_effects_log(&effects);
 	else if (err > 0)
@@ -392,6 +496,7 @@ static int get_log(int argc, char **argv, struct command *cmd, struct plugin *pl
 	const char *log_id = "identifier of log to retrieve";
 	const char *log_len = "how many bytes to retrieve";
 	const char *aen = "result of the aen, use to override log id";
+	const char *lsp = "Log Specific Field";
 	const char *raw_binary = "output in raw format";
 	int err, fd;
 
@@ -400,6 +505,7 @@ static int get_log(int argc, char **argv, struct command *cmd, struct plugin *pl
 		__u32 log_id;
 		__u32 log_len;
 		__u32 aen;
+		__u32 lsp;
 		int   raw_binary;
 	};
 
@@ -407,6 +513,7 @@ static int get_log(int argc, char **argv, struct command *cmd, struct plugin *pl
 		.namespace_id = NVME_NSID_ALL,
 		.log_id       = 0,
 		.log_len      = 0,
+		.lsp          = 0,
 	};
 
 	const struct argconfig_commandline_options command_line_options[] = {
@@ -414,7 +521,9 @@ static int get_log(int argc, char **argv, struct command *cmd, struct plugin *pl
 		{"log-id",       'i', "NUM", CFG_POSITIVE, &cfg.log_id,       required_argument, log_id},
 		{"log-len",      'l', "NUM", CFG_POSITIVE, &cfg.log_len,      required_argument, log_len},
 		{"aen",          'a', "NUM", CFG_POSITIVE, &cfg.aen,          required_argument, aen},
+		{"lsp",          'z', "NUM", CFG_POSITIVE, &cfg.lsp,          required_argument, lsp},
 		{"raw-binary",   'b', "",    CFG_NONE,     &cfg.raw_binary,   no_argument,       raw_binary},
+
 		{NULL}
 	};
 
@@ -425,6 +534,11 @@ static int get_log(int argc, char **argv, struct command *cmd, struct plugin *pl
 	if (cfg.aen) {
 		cfg.log_len = 4096;
 		cfg.log_id = (cfg.aen >> 16) & 0xff;
+	}
+
+	if (cfg.lsp > 3) {
+		fprintf(stderr, "Log specific field should be between 0-3");
+		return EINVAL;
 	}
 
 	if (!cfg.log_len) {
@@ -439,7 +553,8 @@ static int get_log(int argc, char **argv, struct command *cmd, struct plugin *pl
 			return EINVAL;
 		}
 
-		err = nvme_get_log(fd, cfg.namespace_id, cfg.log_id, cfg.log_len, log);
+		err = nvme_get_log(fd, cfg.namespace_id, cfg.log_id, cfg.lsp,
+				   cfg.log_len, log);
 		if (!err) {
 			if (!cfg.raw_binary) {
 				printf("Device:%s log-id:%d namespace-id:%#x\n",

@@ -60,6 +60,28 @@ struct nvme_firmware_log_page {
 	__u8	resv2[448];
 };
 
+/* Derived from 1.3a Figure 101: Get Log Page – Telemetry Host
+ * -Initiated Log (Log Identifier 07h)
+ */
+struct nvme_telemetry_log_page {
+	__u8    lpi; /* Log page identifier */
+	__u8    rsvd[4];
+	__u8    iee_oui[3];
+	__u16   dalb1; /* Data area 1 last block */
+	__u16   dalb2; /* Data area 2 last block */
+	__u16   dalb3; /* Data area 3 last block */
+	__u8    rsvd1[368]; /* TODO verify */
+	__u8    ctrlavail; /* Controller initiated data avail?*/
+	__u8    ctrldgn; /* Controller initiated telemetry Data Gen # */
+	__u8    rsnident[128];
+	/* We'll have to double fetch so we can get the header,
+	 * parse dalb1->3 determine how much size we need for the
+	 * log then alloc below/
+	 */
+	__u8    telemetry[0]; 
+};
+
+
 /* idle and active power scales occupy the last 2 bits of the field */
 #define POWER_SCALE(s) ((s) >> 6)
 
